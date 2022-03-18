@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: "https://gitlab.com/makkus/odk-central-kubernetes.git"
+    repoURL: "https://github.com/ferjavrec/odk-central.git"
     targetRevision: HEAD
     path: "manifests/apps/"
   destination:

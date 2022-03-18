@@ -12,7 +12,7 @@ spec:
   project: default
   source:
     path: manifests/odk-central/redis
-    repoURL: https://gitlab.com/makkus/odk-central-kubernetes.git
+    repoURL: https://github.com/ferjavrec/odk-central.git
     targetRevision: HEAD
 #  directory:
 #    recurse: true
