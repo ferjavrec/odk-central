@@ -1,0 +1,10 @@
+dependencies:
+- name: kubedb
+  version: "v0.12.0"
+  repository: "https://charts.appscode.com/stable"
+
+#- name: kubedb-catalog
+#  version: "v0.12.0"
+#  repository: "https://charts.appscode.com/stable"
+
+

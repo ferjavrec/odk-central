@@ -1,0 +1,20 @@
+apiVersion: kubedb.com/v1alpha1
+kind: Postgres
+metadata:
+  name: postgres
+  namespace: odk-central
+spec:
+  version: "9.6-v3"
+  storageType: Durable
+  storage:
+    storageClassName: "local-path"
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: 1Gi
+  terminationPolicy: WipeOut
+  init:
+    scriptSource:
+      configMap:
+        name: postgres-init

@@ -1,0 +1,166 @@
+
+* tldr;
+
+#+begin_src 
+# create dev cluster
+k3d cluster create nrc -v /dev/mapper:/dev/mapper --k3s-server-arg '--no-deploy=traefik' '--no-deploy=metrics-server'
+# install ArgoCD
+ark install argocd
+# install kubedb operator
+helm install kubedb-operator appscode/kubedb --version v0.12.0 --namespace kube-system
+## wait until crds are registered: kubectl get crds -l app=kubedb -w , then:
+helm install kubedb-catalog appscode/kubedb-catalog --version v0.12.0 --namespace kube-system
+# wait until ArgoCD install is finished, then register odk-central app repo in ArgoCD
+kubectl apply -f odk-central.app.yaml
+# get argocd 'admin' password
+kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-server -o name | cut -d'/' -f 2
+# port forward argocd frontend
+kubectl port-forward svc/argocd-server -n argocd 8081:443
+# visit argocd frontend and 'sync' apps: https://localhost:8081
+
+#+end_src
+
+* Documentation
+
+ 
+** Images
+
+   Container images for the enketo back- and frontend are done using [[https://gitlab.com/makkus/central/-/blob/master/.gitlab-ci.yml][Gitlab CI]], the registry for them can be found here: [[https://gitlab.com/makkus/central/container_registry][https://gitlab.com/makkus/central/container_registry]]
+
+** Prepare cluster
+
+*** ... for development
+
+     For install instruction for =k3d= check out the [[https://github.com/rancher/k3d][K3d homepage]].
+     
+     Create cluster: 
+     
+     #+begin_src
+     k3d cluster create nrc -v /dev/mapper:/dev/mapper --k3s-server-arg '--no-deploy=traefik' --k3s-server-arg '--no-deploy=metrics-server'
+     #+end_src
+       
+*** ... for 'production'
+
+    In the context of this exercise, I'm using [[https://github.com/alexellis/k3sup][K3sup]] to install [[https://k3s.io][K3S]] on the target machine. If this were 'real' I'd use whatever provisioning tool/framework was used in the organization (Terraform, Ansible, etc...).
+
+    Install k3s as a single node cluster: 
+
+     #+begin_src
+    k3sup install --ip 13.94.193.108 --user azureuser --context nrc --k3s-extra-args '--no-deploy=traefik' --k3s-extra-args '--no-deploy=metrics-server'
+     #+end_src
+
+** [[https://argoproj.github.io/argo-cd/][ArgoCD]]
+
+   ArgoCD is a tool that allows for a GitOps-style management of Kubernetes manifests. Basically, it monitors a git repository for supported manifest types (plain yaml files, helm charts, etc.), and applies them to a Kubernetes cluster whenever the repository changes.
+
+   For this exercise I'm using [[https://github.com/alexellis/arkade][Arkade]] to install ArgoCD. Usually I' d use a more declarative way of doing that (e.g. by using Terraform).
+
+  - installation: =ark install argocd=
+  - information/login details: =ark info argocd=
+  - get password for 'admin' account: =kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-server -o name | cut -d'/' -f 2=
+  - login to web frontend: =kubectl port-forward svc/argocd-server -n argocd 8081:443= -- then visit http://localhost:8081
+  
+** [[https://kubedb.com/][KubeDB]]
+
+   Usually, the KubeDB operator would be installed via ArgoCD (see below). I didn't get that to work reliably and I didn't want to spend more time on this in this context, so for now I'm installing it manually before anything else:
+
+     - =helm install kubedb-operator appscode/kubedb --version v0.12.0 --namespace kube-system=
+     - wait until crds are installed: =kubectl get crds -l app=kubedb -w=
+     - =helm install kubedb-catalog appscode/kubedb-catalog  --version 0.12.0 --namespace kube-system=
+     
+** Install odk-central specific manifests
+
+   This repository is using the 'app-of-apps' approach outlined in the [[https://argoproj.github.io/argo-cd/operator-manual/declarative-setup/#app-of-apps][ArgoCD documentation]]. That means there is a hierarchy of 'Application'-type manifests, which contain child 'Application'-type manifests, and so on. This makes the display of installed apps and sub-apps a bit less intuitive on the ArgoCD web interface, but gives more control in terms of order in which to install parts of the overall application, and it also makes the whole thing more modular, which means in the long term parts of it can be re-used. Currently, there is some boilerplate/reduntant information because of this setup (e.g. having to specify each sub-application manually under =manifests/apps/*=), but I think it is an acceptable trade-off. Ideally, everything under =manifests/apps= would be generated dynamically, and it wouldn't be too much effort to write a script to do that. Famous last words... :-)
+
+   Long story short, to deploy the whole she-bang, all that is needed is to apply the single root application manifest:
+
+   =kubectl -f odk-central.app.yaml=
+
+   This will register the url to this repository in ArgoCD. Once there is more testing it will be possible to auto-sync applications, sub-applications, and updates to those. For now, I'm doing this step manually. For this, one has to go  to the ArgoCD webfrontend, sync the root application, then click on the applications as they appear and sync them and their childs too.
+
+*** Manifest organisation
+
+    The manifests for this projects are split into 3 categories:
+   
+     - *ArgoCD-related* (=apps/=): manifests to tell ArgoCD which [[https://argoproj.github.io/argo-cd/operator-manual/declarative-setup/#applications][Applications]] to install/monitor
+     - *Operators/cluster management* (=mgmt/=): manifests to install operators or other 'base' services (ingress, cert-manager, ...)
+     - *App manifests* (=odk-central/=): the manifests for the actual application that needs to be deployed
+    
+**** =apps/=: ArgoCD-related manifests
+
+     This contains all the 'Appliation'-type manifests for all modules that are necessary for the okd-central Kubernetes deploy. In this instance, it's basically a 3-level hierarchy: the root app, 2 'main' child categories ('mgmt' for generic, non-okd-central-specific resources, and 'odk-central' for okd-central specific resources). The last level are the actual application modules to be installed. I'm not 100% sure this is the perfect setup, but it's good enough for a quick-and-dirty thing like this assignment. I would have to do more thinking to figure out whether there is a better way.
+
+**** =mgmt/=: operators/cluster management
+
+     I usually prefer to use operators for all the 'base' services (monitoring, databases, etc.), if good-quality ones exist (or even just decent ones that seem likely to become good-quality in a reasonable time-frame). In most cases, managing those services is a solved problem, and those operators make certain life-cycle operations (init/backup/restore databases, etc.) easier, and configurable in a declarative style.
+
+***** =mgmt/base/=: base manifests to apply before anything else
+
+      This is mostly for creating namespaces, and sometimes secrets etc.
+
+***** =mgmt/ingress-nginx/=: manifest to install nginx ingress
+      
+      This uses the generic 'cloud' deploy manifest from the official ingress-nginx website, with slight modifications. Those changes would have to be tracked if this were for real.
+
+***** =mgmt/kubedb*/=: Kubernetes operator to manage databases
+
+      I haven't used the [[https://kubedb.com/][KubeDB operator]] before, but I think this is a good opportunity to try it out. I usually use the [[https://github.com/zalando/postgres-operator][Zalando Operator for Postgres]], but in this case I like the fact that /KubeDB/ supports both Postgres and Redis (of the latter we need two instances which makes using an operator make even more sense), so by using it we can cut down the number of operators we use (and which can break) by one.
+
+      *NOTE*: declarative install of the kubedb operator is disabled for now, couldn't get it to work because of some issues related to ArgoCD/helm2. For now, I installed the kubedb operator manually using helm (as described in https://kubedb.com/docs/0.12.0/setup/install/)
+
+
+**** =odk-central/=: manifests to install the odk-central application
+
+***** =odk-central/configs=: config maps
+     
+      Configurations for postgres & redis & other services. Located in separate directory for easier access, and so that ArgoCD can install them before the services those manifests configure. In most cases that would not be necessary, because Kubernetes is supposed to deal with that. But, you know...
+
+      Also contains a secret that is used in the enketo back- and frontend. Currently this is stored base64-encoded, unencrypted, which obviously would be a no-go normally. How to properly do that depends on how secrets are managed elsewhere in an organization. An easy alternative would be to use [[https://github.com/bitnami-labs/sealed-secrets][sealed secrets]], or some of the other alternatives listed on the [[https://argoproj.github.io/argo-cd/operator-manual/secret-management/][ArgoCD website]].
+
+***** =odk-central/postgres=: postgres db manifest & init config map
+
+      This folder contains the manifest to create a Postgres service as well as configuration that runs a sql script to initialize the odk database and role.
+
+      To connect to the Postgres db, first retrieve the credentials, then create a port-forward to the service:
+
+      - username: 
+      #+begin_src
+      kubectl get secrets -n odk-central postgres-auth -o jsonpath='{.data.\POSTGRES_USER}' | base64 -d
+      #+end_src
+      - password: 
+      #+begin_src
+      kubectl get secrets -n odk-central  postgres-auth -o jsonpath='{.data.\POSTGRES_PASSWORD}' | base64 -d
+      #+end_src
+      - port forward the postgres service:
+      #+begin_src
+      kubectl port-forward -n odk-central postgres-0 5432:5432
+      #+end_src
+
+      Now you should be able to connect to your db via localhost:5432.
+
+***** =odk-central/redis=: redis services manifests as well as their configs
+
+      Each redis instance gets its own configmap that contains the redis config which will be mounted into the container as a file.
+
+***** =odk-central/pyxform=: pyxform deployment manifest
+
+      Just a /Deployment/ and /Service/ description. Only important thing is that its service is accessible as hostname =pyxform= in the odk-central namespace.
+
+***** =odk-central/enketo-backend=: the enketo backend
+
+      /Deployment/ and /Service/ descriptions for the enketo backend service. Uses a secret configured in the =configs= directory to mount the =/etc/secrets/*= files. The way this is done in the application is a bit silly, and ideally I'd probably try to push improvements to the enketo-backend code to make configuration and secret management a bit nicer.
+
+***** =odk-central/enketo-frontend=: the enketo frontend
+
+      /Deployment/, /Service/, and /Ingress/ descriptions for the enketo frontend service. Also uses a secret configured in the =configs= directory to mount the =/etc/secrets/*= files. 
+
+* ToDo
+  
+  - https cert: use [[https://github.com/jetstack/cert-manager][cert-manager]] (edit: I added it because it's easier to get that going then to deal with modern browsers non-acceptance of non-http sites... Not all configuration for this is checked into this repo yet, but this was out of scope anyway.)
+  - monitoring: nowadays this is easy enough using the [[https://github.com/prometheus-operator/prometheus-operator][Prometheus operator]]
+  - logs: I've had good initial success with [[https://grafana.com/oss/loki/][Grafana Loki]]
+
+* Notes:
+
+ - most of the tools and technologies I'm using for this (Gitlab, K3s, etc.) are ones I'm familiar with, and have done some testing/assessment with in the past, so I'm reasonable confident in their quality. In a 'production' environment I'd probably use other/additional markers to assess which technologies to use (e.g.: does it fit in the current infrastructure?).
+

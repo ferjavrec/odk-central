@@ -1,0 +1,7 @@
+/manifests/mgmt/kubedb-catalog/charts/
+/manifests/mgmt/kubedb/charts/
+*~
+*.lock
+old/
+todo.org
+
